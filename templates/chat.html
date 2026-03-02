@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<title>Local LLM Chat</title>
+
+<!-- Markdown renderer -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<style>
+{% include 'style.css' %}
+</style>
+
+</head>
+
+<body>
+
+<div id="container">
+
+<h1>Local LLM Chat</h1>
+
+Model:
+<select id="model">
+    {% for m in models %}
+        <option>{{ m }}</option>
+    {% endfor %}
+</select>
+
+<div id="chat">
+    {% for msg in history %}
+        <div class="message {{ 'user' if msg.role == 'user' else 'bot' }}">
+            {{ msg.content }}
+        </div>
+    {% endfor %}
+</div>
+
+<div id="controls">
+    <textarea id="msg" rows="3" placeholder="Type a message..."></textarea>
+    <button onclick="send()">Send</button>
+</div>
+
+</div>
+
+<script>
+async function send() {
+
+    const message = document.getElementById("msg").value;
+    const model = document.getElementById("model").value;
+    const chat = document.getElementById("chat");
+
+    if (!message.trim()) return;
+
+    // Add user bubble
+    chat.innerHTML += `<div class="message user">${message}</div>`;
+    document.getElementById("msg").value = "";
+    chat.scrollTop = chat.scrollHeight;
+
+    const response = await fetch("/stream", {
+        method: "POST",
+        body: new URLSearchParams({
+            message: message,
+            model: model
+        })
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let rawText = "";
+
+    let botBubble = document.createElement("div");
+    botBubble.className = "message bot";
+    chat.appendChild(botBubble);
+
+    while(true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+
+        rawText += decoder.decode(value);
+
+        // Markdown → HTML
+        botBubble.innerHTML = marked.parse(rawText);
+
+        chat.scrollTop = chat.scrollHeight;
+    }
+}
+
+document.getElementById("msg").addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+        if (event.shiftKey) {
+            // Allow newline (default behavior)
+            return;
+        }
+
+        // Prevent newline
+        event.preventDefault();
+
+        // Trigger send()
+        send();
+    }
+});
+
+</script>
+
+</body>
+</html>
