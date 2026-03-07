@@ -20,90 +20,78 @@
 
 <div id="container">
 
-<h1>Local LLM Chat</h1>
+    <h1>Local LLM Chat</h1>
 
-<!-- Model selector populated by Flask -->
-Model:
-<select id="model">
-    {% for m in models %}
-        <option>{{ m }}</option>
-    {% endfor %}
-</select>
+    <!-- model selector populated by flask app -->
+    Model:
+    <select id="model">
+        {% for m in models %}
+            <option>{{ m }}</option>
+        {% endfor %}
+    </select>
 
-<!-- Chat message area -->
-<div id="chat">
-    {% for msg in history %}
-        <div class="message {{ 'user' if msg.role == 'user' else 'bot' }}">
-            {{ msg.content }}
-        </div>
-    {% endfor %}
-</div>
+    <!-- chat message area -->
+    <div id="chat">
+        {% for msg in history %}
+            <div class="message {{ 'user' if msg.role == 'user' else 'bot' }}">
+                {{ msg.content }}
+            </div>
+        {% endfor %}
+    </div>
 
-<!-- Message input controls -->
-<div id="controls">
-    <textarea id="msg" rows="3" placeholder="Type a message..."></textarea>
-    <button onclick="send()">Send</button>
-</div>
+    <!-- message input controls -->
+    <div id="controls">
+        <textarea id="msg" rows="3" placeholder="Type a message..."></textarea>
+        <button onclick="send()">Send</button>
+    </div>
 
 </div>
 
 <script>
 
-/************************************************************
-CONNECT TO WEBSOCKET SERVER
-************************************************************/
-
-// Create persistent Socket.IO connection
+// create persistent Socket.IO connection
 const socket = io();
 
-/************************************************************
-AUDIO PLAYBACK QUEUE
-Ensures audio segments play sequentially without gaps.
-************************************************************/
-
+// audio playback queue (reduces pauses during playback)
 let audioQueue = [];
 let playingAudio = false;
 
 // Web Audio API context
 const audioCtx = new AudioContext();
 
-// Plays the next audio chunk in the queue
+// play the next audio chunk in the queue
 function playNextAudio() {
 
-    if (audioQueue.length === 0) {
+    // quit if the queue is empty
+    if (audioQueue.length == 0) {
         playingAudio = false;
         return;
     }
 
     playingAudio = true;
 
-    // Remove next chunk
+    // remove next chunk
     const floatData = audioQueue.shift();
 
-    // Create audio buffer
-    const buffer = audioCtx.createBuffer(
-        1,
-        floatData.length,
-        24000
-    );
-
+    // create audio buffer to store data then send data into it
+    // (# channels: 1=mono, # samples, sample rate - determined by TTS app)
+    const buffer = audioCtx.createBuffer( 1, floatData.length, 24000 );
     buffer.copyToChannel(floatData, 0);
 
-    // Create audio source
+    // create audio source
     const source = audioCtx.createBufferSource();
+    // set buffer data to be played
     source.buffer = buffer;
     source.connect(audioCtx.destination);
 
-    // When audio finishes, play the next segment
+    // when audio finishes, play the next segment
     source.onended = playNextAudio;
 
     source.start();
 }
 
-/************************************************************
-SEND MESSAGE TO SERVER
-************************************************************/
-
+// send message to server
+//   and set up new message bubbles (for user and LLM)
 function send() {
 
     const messageBox = document.getElementById("msg");
@@ -111,32 +99,30 @@ function send() {
     const model = document.getElementById("model").value;
     const chat = document.getElementById("chat");
 
-    if (!message.trim()) return;
+    // no content? don't send an empty string
+    if (!message.trim()) 
+        return;
 
-    /************************************************
-    Add user message bubble
-    ************************************************/
-
-    chat.innerHTML += `<div class="message user">${message}</div>`;
-
+    // create a message bubble with the user's most recent sent text
+    const userBubble = document.createElement("div");
+    userBubble.className = "message user";
+    chat.appendChild(userBubble);
+    userBubble.innerHTML = message;
+    // clear the send text area
     messageBox.value = "";
-
+    // auto-scroll
     chat.scrollTop = chat.scrollHeight;
 
-    /************************************************
-    Create assistant message bubble (empty initially)
-    ************************************************/
-
+    // create a new message bubble to display the LLM's response text
     window.botBubble = document.createElement("div");
     botBubble.className = "message bot";
     chat.appendChild(botBubble);
 
+    // store the text sent over in chunks 
     window.rawText = "";
 
-    /************************************************
-    Send message via WebSocket
-    ************************************************/
-
+    // send message via Web Socket (rather than GET/POST);
+    // data will be processed (sent to LLM) by the python app
     socket.emit("send_message", {
         message: message,
         model: model
@@ -144,70 +130,47 @@ function send() {
 
 }
 
-/************************************************************
-RECEIVE STREAMING TEXT FROM SERVER
-************************************************************/
-
+// when text is received...
 socket.on("text_chunk", function(chunk) {
 
     rawText += chunk;
-
-    // Render Markdown → HTML
+    // render markdown via HTML
     botBubble.innerHTML = marked.parse(rawText);
-
+    // auto-scroll
     const chat = document.getElementById("chat");
     chat.scrollTop = chat.scrollHeight;
 
 });
 
-/************************************************************
-RECEIVE AUDIO FROM SERVER
-************************************************************/
-
+// when audio is received...
 socket.on("audio_chunk", function(data) {
 
-    // Convert binary data to Float32Array
+    // convert binary data to Float32Array (format used by Web Audio context)
     const floatData = new Float32Array(data);
-
-    // Add to playback queue
+    // add data to playback queue
     audioQueue.push(floatData);
-
-    // Start playback if not already playing
-    if (!playingAudio) {
+    // start playback if not already playing
+    if (!playingAudio)
         playNextAudio();
-    }
 
 });
 
-/************************************************************
-RESPONSE FINISHED
-************************************************************/
-
+// when finished...
 socket.on("done", function() {
-
-    console.log("Assistant finished responding.");
-
+    console.log("done");
 });
 
-/************************************************************
-ENTER KEY HANDLING
-Press Enter to send
-Shift+Enter for newline
-************************************************************/
-
+// press enter to send text, press shift-enter for newline
 document.getElementById("msg").addEventListener("keydown", function(event) {
 
     if (event.key === "Enter") {
 
-        if (event.shiftKey) {
+        if (event.shiftKey)
             return; // allow newline
-        }
 
         event.preventDefault();
-
         send();
     }
-
 });
 
 </script>

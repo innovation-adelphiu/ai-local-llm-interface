@@ -1,5 +1,8 @@
 # Ollama/LLM & PocketTTS/Audio streaming
 
+# TODO: add a role:system field
+# TODO: manage what happens when chat_history gets long
+
 print("Running program...")
 
 import os
@@ -24,12 +27,13 @@ chat_history = []
 
 # load TTS model 
 print("Loading PocketTTS model...")
+
+# on first run, download models from HuggingFace
 tts_model = TTSModel.load_model()
-voice_state = tts_model.get_state_for_audio_prompt("alba")
+voice_state = tts_model.get_state_for_audio_prompt("fantine")
 print("PocketTTS ready...")
 
 # detect installed models; use in a dropdown list in website
-
 def get_models():
     try:
         result = subprocess.run(
@@ -38,7 +42,7 @@ def get_models():
             text=True
         )
         lines = result.stdout.strip().split("\n")[1:]
-        return [line.split()[0] for line in lines if line]
+        return [line.split()[0] for line in lines]
 
     except:
         # fallback model
@@ -67,58 +71,51 @@ def extract_tts_chunk(buffer):
             remainder = buffer[split:]
             return chunk, remainder
 
+    # when the buffer hasn't reached an extraction condition yet
     return None, buffer
 
 # main page
 @app.route("/")
 def index():
-    return render_template(
-        "chat2.html",
-        history=chat_history,
-        models=get_models()
-    )
+    model_list = get_models()
+    return render_template("chat2.html", history=chat_history, models=model_list)
 
-# WebSocket handler (incoming messages)
+# no other routes; everything else handled by Web Sockets
+
+# WebSocket handler (for incoming messages, sent by web page)
 @socketio.on("send_message")
 def handle_message(data):
+
+    # get fields from sent data object
     model = data["model"]
     user_msg = data["message"]
 
-    ###########################################
-    # Save user message
-    ###########################################
+    # store the user message (all data resent to LLM for context)
+    chat_history.append({"role": "user", "content": user_msg})
 
-    chat_history.append({
-        "role": "user",
-        "content": user_msg
-    })
-
-    ###########################################
-    # Call Ollama Chat API (Streaming)
-    ###########################################
-
+    # call the Ollama Chat API (in streaming mode)
+    # returns an iterator object
     response = requests.post(
-
+        # ollama typically runs as a background process on startup
+        #   _API server_ listens here (11434); runs specific model if not active
         "http://localhost:11434/api/chat",
-
-        json={
-            "model": model,
-            "messages": chat_history,
-            "stream": True
-        },
-
+        json={"model": model, "messages": chat_history, "stream": True},
+        # also need to tell python requests to stream tokens as they are streamed to it
+        #   otherwise code execution pauses here until all tokens received
         stream=True
     )
 
+    # accumulate LLM response to store in chat_history
     reply = ""
+    # store text not-yet sent to TTS system
     buffer = ""
 
-    ###########################################
-    # Process streaming tokens
-    ###########################################
-
+    # process streaming tokens (received as JSON)
+    #   objects: { "message":{"role":String, "content":String}, "done":boolean}
+    # note: looping over an iterator continues until Stop single is sent (which triggers break condition)
     for line in response.iter_lines():
 
+        # in case of empty JSON line
         if not line:
             continue
 
@@ -126,83 +123,45 @@ def handle_message(data):
 
         chunk = data["message"]["content"]
 
-        #######################################
         # Send text chunk to browser
-        #######################################
-
         emit("text_chunk", chunk)
 
         reply += chunk
         buffer += chunk
 
-        #######################################
-        # Predictive TTS buffering
-        #######################################
-
+        # predictive TTS buffering
         tts_chunk, buffer = extract_tts_chunk(buffer)
 
+        # if enough text has been received to generate a chunk
         if tts_chunk:
 
+            # text to be processed by TTS
             print("TTS:", tts_chunk)
+            # generate audio speech
+            audio = tts_model.generate_audio(voice_state, tts_chunk)
+            # send audio to browser
+            emit("audio_chunk", audio.numpy().tobytes(), binary=True)
 
-            ###################################
-            # Generate speech
-            ###################################
-
-            audio = tts_model.generate_audio(
-                voice_state,
-                tts_chunk
-            )
-
-            ###################################
-            # Send audio to browser
-            ###################################
-
-            emit(
-                "audio_chunk",
-                audio.numpy().tobytes(),
-                binary=True
-            )
-
-    ###########################################
-    # Speak remaining buffer
-    ###########################################
-
+    # speak any text remaining in the buffer
     if buffer.strip():
 
-        audio = tts_model.generate_audio(
-            voice_state,
-            buffer
-        )
+        # text to be processed by TTS
+        print("TTS:", buffer)
+        # generate audio speech
+        audio = tts_model.generate_audio(voice_state, buffer)
+        # send audio to browser
+        emit("audio_chunk", audio.numpy().tobytes(), binary=True)
 
-        emit(
-            "audio_chunk",
-            audio.numpy().tobytes(),
-            binary=True
-        )
+    # save LLM response message
+    chat_history.append({"role": "assistant", "content": reply})
 
-    ###########################################
-    # Save assistant message
-    ###########################################
-
-    chat_history.append({
-        "role": "assistant",
-        "content": reply
-    })
-
-    ###########################################
-    # Signal completion
-    ###########################################
-
+    # send done signal to client
     emit("done")
 
-###############################################
-# Launch Server
-###############################################
-
+# launch application/server
 if __name__ == "__main__":
 
-    # Prevent double browser launch
+    # prevent double browser launch
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         webbrowser.open("http://127.0.0.1:5000")
 
