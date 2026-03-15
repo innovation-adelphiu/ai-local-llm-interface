@@ -2,6 +2,7 @@
 
 # TODO: add a role:system field
 # TODO: manage what happens when chat_history gets long
+# TODO: add a "stop voice" button
 
 print("Running program...")
 
